@@ -56,6 +56,7 @@ namespace okvis {
  * @brief This class is to safely notify different threads whether IMU measurements
  *        up to a timestamp (e.g. the one of a camera frame) have already been registered.
  */
+ //IMU和Frame时间同步：即获得Frame时刻以后的IMU 数据
 class ImuFrameSynchronizer {
  public:
   /// @brief Constructor.
