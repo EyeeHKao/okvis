@@ -99,6 +99,8 @@ bool Frontend::detectAndDescribe(size_t cameraIndex,
   // check there are no keypoints here
   OKVIS_ASSERT_TRUE(Exception, keypoints == nullptr, "external keypoints currently not supported")
 
+  //配置帧的特征检测器和描述子计算器：特征检测算法和帧分离，使得可以针对帧提供各种特征检测算法，更加灵活
+  //这里是借助opencv中的特征检测和描述子计算抽象基类cv::FeatureDetector/cv::DescriptorExtractor，可以针对cv中多种不同的特征提取算法予以配置。当然自己也可以通过模板来实现
   frameOut->setDetector(cameraIndex, featureDetectors_[cameraIndex]);
   frameOut->setExtractor(cameraIndex, descriptorExtractors_[cameraIndex]);
 
@@ -106,7 +108,8 @@ bool Frontend::detectAndDescribe(size_t cameraIndex,
 
   // ExtractionDirection == gravity direction in camera frame
   Eigen::Vector3d g_in_W(0, 0, -1);
-  Eigen::Vector3d extractionDirection = T_WC.inverse().C() * g_in_W;
+  //注意T_WC是在上一次优化基础上imu预测的位姿，这里用来做描述子的方向参考
+  Eigen::Vector3d extractionDirection = T_WC.inverse().C() * g_in_W;    ///R_cw * g_in_w表示此向量在C系的坐标
   frameOut->describe(cameraIndex, extractionDirection);
 
   // set detector/extractor to nullpointer? TODO
@@ -121,8 +124,12 @@ bool Frontend::dataAssociationAndInitialization(
     const std::shared_ptr<okvis::MapPointVector> /*map*/, // TODO sleutenegger: why is this not used here?
     std::shared_ptr<okvis::MultiFrame> framesInOut,
     bool *asKeyframe) {
+  //关联规则： 初始时无关键帧，就只做左右立体匹配，三角化路标点，完成初始化
+  // 否则先做关键帧的3D-2D匹配和2D-2D匹配，然后做相邻帧的3D-2D和2D-2D匹配，
+  // 然后判断是否为关键帧
+  // 最后再做左右相机立体匹配
   // match new keypoints to existing landmarks/keypoints
-  // initialise new landmarks (states)
+  // initialise new landmarks (states)：
   // outlier rejection by consistency check
   // RANSAC (2D2D / 3D2D)
   // decide keyframe
@@ -139,6 +146,7 @@ bool Frontend::dataAssociationAndInitialization(
   int num3dMatches = 0;
 
   // first frame? (did do addStates before, so 1 frame minimum in estimator)
+  // 做匹配至少要2帧
   if (estimator.numFrames() > 1) {
 
     int requiredMatches = 5;
@@ -232,9 +240,9 @@ bool Frontend::dataAssociationAndInitialization(
     }
     matchToLastFrameTimer.stop();
   } else
-    *asKeyframe = true;  // first frame needs to be keyframe
+    *asKeyframe = true;  // first frame needs to be keyframe：第一帧和第二帧都当做关键帧
 
-  // do stereo match to get new landmarks
+  // do stereo match to get new landmarks：立体匹配（左右相机）得到三角化的地图点
   TimerSwitchable matchStereoTimer("2.4.3 matchStereo");
   switch (distortionType) {
     case okvis::cameras::NCameraSystem::RadialTangential: {
@@ -387,9 +395,11 @@ int Frontend::matchToKeyframes(okvis::Estimator& estimator,
   int numUncertainMatches = 0;
 
   // go through all the frames and try to match the initialized keypoints
+  //先做3D-2D匹配
   size_t kfcounter = 0;
+  //从后往前遍历，和最近的（3帧）关键帧3D-2D做匹配
   for (size_t age = 1; age < estimator.numFrames(); ++age) {
-    uint64_t olderFrameId = estimator.frameIdByAge(age);
+    uint64_t olderFrameId = estimator.frameIdByAge(age);//age=0,表示当前帧id,1=>上一帧...依次从后往前遍历
     if (!estimator.isKeyframe(olderFrameId))
       continue;
     for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
@@ -406,10 +416,10 @@ int Frontend::matchToKeyframes(okvis::Estimator& estimator,
 
     }
     kfcounter++;
-    if (kfcounter > 2)
+    if (kfcounter > 2)  ///只匹配三帧关键帧
       break;
   }
-
+  //再做2D-2D匹配
   kfcounter = 0;
   bool firstFrame = true;
   for (size_t age = 1; age < estimator.numFrames(); ++age) {
@@ -447,7 +457,7 @@ int Frontend::matchToKeyframes(okvis::Estimator& estimator,
     }
 
     kfcounter++;
-    if (kfcounter > 1)
+    if (kfcounter > 1)  ///只处理2帧KF
       break;
   }
 
@@ -475,7 +485,7 @@ int Frontend::matchToLastFrame(okvis::Estimator& estimator,
   uint64_t lastFrameId = estimator.frameIdByAge(1);
 
   if (estimator.isKeyframe(lastFrameId)) {
-    // already done
+    // already done：因为在接口函数dataAssociationAndInitialization中是先做关键帧匹配，再做相邻帧匹配的
     return 0;
   }
 
@@ -530,7 +540,7 @@ void Frontend::matchStereo(okvis::Estimator& estimator,
       // first, check the possibility for overlap
       // FIXME: implement this in the Multiframe...!!
 
-      // check overlap
+      // check overlap：检测是图像是否有重叠
       if(!multiFrame->hasOverlap(im0, im1)){
         continue;
       }

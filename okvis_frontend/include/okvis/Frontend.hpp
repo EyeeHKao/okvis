@@ -49,6 +49,7 @@
 #include <okvis/DenseMatcher.hpp>
 
 /// \brief okvis Main namespace of this package.
+//前端主要是特征提取，描述子计算， 2d-2d匹配，3d-2d匹配，立体匹配，三角化， 和上一帧匹配，和关键帧匹配，关键帧判定等
 namespace okvis {
 
 /**
