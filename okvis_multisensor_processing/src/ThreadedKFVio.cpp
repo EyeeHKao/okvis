@@ -127,18 +127,26 @@ void ThreadedKFVio::init() {
 void ThreadedKFVio::startThreads() {
 
   // consumer threads
+  //每个camera一个线程
   for (size_t i = 0; i < numCameras_; ++i) {
+    //图像帧处理线程：
     frameConsumerThreads_.emplace_back(&ThreadedKFVio::frameConsumerLoop, this, i);
   }
+  //每对camera一个线程，匹配多帧图像的关键点
   for (size_t i = 0; i < numCameraPairs_; ++i) {
     keypointConsumerThreads_.emplace_back(&ThreadedKFVio::matchingLoop, this);
   }
+  //IMU数据处理线程:以IMU频率传播状态，同时将数据存入imuMeasurement_等待同步器处理
   imuConsumerThread_ = std::thread(&ThreadedKFVio::imuConsumerLoop, this);
-  positionConsumerThread_ = std::thread(&ThreadedKFVio::positionConsumerLoop,
-                                        this);
+  //位置数据处理线程
+  positionConsumerThread_ = std::thread(&ThreadedKFVio::positionConsumerLoop, this);
+
+  //Gps数据处理线程
   gpsConsumerThread_ = std::thread(&ThreadedKFVio::gpsConsumerLoop, this);
+  //磁力数据处理线程
   magnetometerConsumerThread_ = std::thread(
       &ThreadedKFVio::magnetometerConsumerLoop, this);
+  //差分处理线程
   differentialConsumerThread_ = std::thread(
       &ThreadedKFVio::differentialConsumerLoop, this);
 
@@ -217,13 +225,16 @@ bool ThreadedKFVio::addImage(const okvis::Time & stamp, size_t cameraIndex,
     frame->measurement.deliversKeypoints = false;
   }
 
+  //这里阻塞式时，都采取将队列长度设置为1的策略，而非阻塞式则是给了一个适当大小的缓冲长度
   if (blocking_) {
     cameraMeasurementsReceived_[cameraIndex]->PushBlockingIfFull(frame, 1);
-    return true;
+    return true;    ///返回true表示上一次数据处理完，阻塞式一定是返回ture的，因为是阻塞等待队列中最老的数据被处理完，
   } else {
     cameraMeasurementsReceived_[cameraIndex]->PushNonBlockingDroppingIfFull(
         frame, max_camera_input_queue_size);
-    return cameraMeasurementsReceived_[cameraIndex]->Size() == 1;
+    return cameraMeasurementsReceived_[cameraIndex]->Size() == 1;   ///队列大小为1，说明加入前队列为空，已处理完队列中数据，所以返回true
+    //一般数据消耗处理速度比数据生产快的话，队列大小会一直是1或者0，若偶尔处理较慢，可能会超过1
+    //若一直处理很慢，那么阻塞式会一直阻塞在数据压入上，导致处理的都是老的数据，非阻塞式则会出现掉帧，卡顿等现象
   }
 }
 
@@ -322,6 +333,7 @@ void ThreadedKFVio::setBlocking(bool blocking) {
 void ThreadedKFVio::frameConsumerLoop(size_t cameraIndex) {
   std::shared_ptr<okvis::CameraMeasurement> frame;
   std::shared_ptr<okvis::MultiFrame> multiFrame;
+  //计时器
   TimerSwitchable beforeDetectTimer("1.1 frameLoopBeforeDetect"+std::to_string(cameraIndex),true);
   TimerSwitchable waitForFrameSynchronizerMutexTimer("1.1.1 waitForFrameSynchronizerMutex"+std::to_string(cameraIndex),true);
   TimerSwitchable addNewFrameToSynchronizerTimer("1.1.2 addNewFrameToSynchronizer"+std::to_string(cameraIndex),true);
@@ -334,41 +346,44 @@ void ThreadedKFVio::frameConsumerLoop(size_t cameraIndex) {
 
 
   for (;;) {
-    // get data and check for termination request
+    // get data and check for termination request:阻塞等待从线程安全队列获取帧数据
     if (cameraMeasurementsReceived_[cameraIndex]->PopBlocking(&frame) == false) {
-      return;
+      return;   ///返回false说明请求了shutdown,那么这个loop就应该跳出停止了
     }
-    beforeDetectTimer.start();
+    beforeDetectTimer.start();  ///开始计时：记录在检测特征点前 等待获取帧同步器，帧同步，等待获取上次状态，帧IMU同步等所话费的所有时间
+    //添加一帧图像到帧同步器（用于同步某一时刻多个camera的拍摄的图像）
     {  // lock the frame synchronizer
-      waitForFrameSynchronizerMutexTimer.start();
-      std::lock_guard<std::mutex> lock(frameSynchronizer_mutex_);
-      waitForFrameSynchronizerMutexTimer.stop();
+      waitForFrameSynchronizerMutexTimer.start(); ///开始计时，记录获取frameSynchronizer_mutex_互斥器所花费的时间
+      std::lock_guard<std::mutex> lock(frameSynchronizer_mutex_);   ///其他camera的frameConsumerLoop线程会抢占
+      waitForFrameSynchronizerMutexTimer.stop();  ///计时结束
       // add new frame to frame synchronizer and get the MultiFrame containing it
-      addNewFrameToSynchronizerTimer.start();
+      addNewFrameToSynchronizerTimer.start(); ///开始计时，记录添加新帧到帧同步器（同步各个camera抓取的图像）所需时间
+      //返回包含该帧的多个相机的帧图像
       multiFrame = frameSynchronizer_.addNewFrame(frame);
-      addNewFrameToSynchronizerTimer.stop();
-    }  // unlock frameSynchronizer only now as we can be sure that not two states are added for the same timestamp
+      addNewFrameToSynchronizerTimer.stop();   ///计时结束
+    }  //释放锁 unlock frameSynchronizer only now as we can be sure that not two states are added for the same timestamp
     okvis::kinematics::Transformation T_WS;
     okvis::Time lastTimestamp;
     okvis::SpeedAndBias speedAndBiases;
     // copy last state variables
     {
-      waitForStateVariablesMutexTimer.start();
+      waitForStateVariablesMutexTimer.start();  ///开始计时，记录获取lastState_mutex_互斥器所花费的时间:这个不能阻塞过久的
       std::lock_guard<std::mutex> lock(lastState_mutex_);
-      waitForStateVariablesMutexTimer.stop();
+      waitForStateVariablesMutexTimer.stop();  ///计时结束
       T_WS = lastOptimized_T_WS_;
       speedAndBiases = lastOptimizedSpeedAndBiases_;
-      lastTimestamp = lastOptimizedStateTimestamp_;
-    }
+      lastTimestamp = lastOptimizedStateTimestamp_; ///上次处理的帧的时间戳（或者同步后的）
+    }///释放锁
 
-    // -- get relevant imu messages for new state
+    // -- get relevant imu messages for new state：假设只有1个camera，那么就是指该帧的时间，否则是多个帧同步后的时间
     okvis::Time imuDataEndTime = multiFrame->timestamp()
-        + temporal_imu_data_overlap;
-    okvis::Time imuDataBeginTime = lastTimestamp - temporal_imu_data_overlap;
+        + temporal_imu_data_overlap;  ///往后附加了段重叠时间（20ms,一个IMU周期5ms,相当于后面还要附带4个IMU data）
+    okvis::Time imuDataBeginTime = lastTimestamp - temporal_imu_data_overlap; ///往前退了一段重叠时间，相当于还要带上上一帧时刻往前4个IMU data
 
     OKVIS_ASSERT_TRUE_DBG(Exception,imuDataBeginTime < imuDataEndTime,"imu data end time is smaller than begin time.");
 
     // wait until all relevant imu messages have arrived and check for termination request
+    //imu 和 frame同步器：等待此时刻（同步后的帧时间戳+imu重叠时间）为止的所有IMU数据到达，返回false说明shutdown了
     if (imuFrameSynchronizer_.waitForUpToDateImuData(
       okvis::Time(imuDataEndTime)) == false)  {
       return;
@@ -378,7 +393,7 @@ void ThreadedKFVio::frameConsumerLoop(size_t cameraIndex) {
                           "Waiting for up to date imu data seems to have failed!");
 
     okvis::ImuMeasurementDeque imuData = getImuMeasurments(imuDataBeginTime,
-                                                           imuDataEndTime);
+                                                           imuDataEndTime); ///从imuMeasurements_获取这段时间的所有IMU数据
 
     // if imu_data is empty, either end_time > begin_time or
     // no measurements in timeframe, should not happen, as we waited for measurements
@@ -412,48 +427,50 @@ void ThreadedKFVio::frameConsumerLoop(size_t cameraIndex) {
       }
     } else {
       // get old T_WS
-      propagationTimer.start();
+      propagationTimer.start(); ///开始计时，记录两帧间通过IMU数据进行传播所花费的时间
       okvis::ceres::ImuError::propagation(imuData, parameters_.imu, T_WS,
                                           speedAndBiases, lastTimestamp,
                                           multiFrame->timestamp());
-      propagationTimer.stop();
+      propagationTimer.stop();  ///计时结束
     }
     okvis::kinematics::Transformation T_WC = T_WS
         * (*parameters_.nCameraSystem.T_SC(frame->sensorId));
     beforeDetectTimer.stop();
-    detectTimer.start();
-    frontend_.detectAndDescribe(frame->sensorId, multiFrame, T_WC, nullptr);
-    detectTimer.stop();
-    afterDetectTimer.start();
+    detectTimer.start();  ///开始计时，记录本camrea图像特征点检测和描述子计算所耗时间
+    frontend_.detectAndDescribe(frame->sensorId, multiFrame, T_WC, nullptr);    ///计算这个camera图像的关键点
+    detectTimer.stop(); ///计时结束
+    afterDetectTimer.start(); ///开始计时,记录特征点检测完成后，处理帧所花时间
 
-    bool push = false;
+    bool push = false;  ///是否将特征点压入队列中：所有camera的图像检测完毕后则压入
     {  // we now tell frame synchronizer that detectAndDescribe is done for MF with our timestamp
-      waitForFrameSynchronizerMutexTimer2.start();
+      waitForFrameSynchronizerMutexTimer2.start();  ///开始计时，记录获取帧同步器所花时间
       std::lock_guard<std::mutex> lock(frameSynchronizer_mutex_);
-      waitForFrameSynchronizerMutexTimer2.stop();
+      waitForFrameSynchronizerMutexTimer2.stop();   ///计时结束
       frameSynchronizer_.detectionEndedForMultiFrame(multiFrame->id());
 
+      ///若所有camera的图像都完成特征点检测和描述，则返回true，并压入特征点队列
       if (frameSynchronizer_.detectionCompletedForAllCameras(
           multiFrame->id())) {
 //        LOG(INFO) << "detection completed for multiframe with id "<< multi_frame->id();
         push = true;
       }
     }  // unlocking frame synchronizer
-    afterDetectTimer.stop();
+    afterDetectTimer.stop();  ///计时结束
     if (push) {
-      // use queue size 1 to propagate a congestion to the _cameraMeasurementsReceived queue
+      // use queue size 1(队列长度为1说明是同步处理) to propagate a congestion to the _cameraMeasurementsReceived queue
       // and check for termination request
-      waitForMatchingThreadTimer.start();
+      waitForMatchingThreadTimer.start(); ///开始计时，记录等待匹配线程匹配完特征点所花时间
       if (keypointMeasurements_.PushBlockingIfFull(multiFrame, 1) == false) {
         return;
       }
-      waitForMatchingThreadTimer.stop();
+      waitForMatchingThreadTimer.stop();  ///计时结束
     }
   }
 }
 
-// Loop that matches frames with existing frames.
+// Loop that matches frames with existing frames.:特征点匹配
 void ThreadedKFVio::matchingLoop() {
+  //一系列计时器
   TimerSwitchable prepareToAddStateTimer("2.1 prepareToAddState",true);
   TimerSwitchable waitForOptimizationTimer("2.2 waitForOptimization",true);
   TimerSwitchable addStateTimer("2.3 addState",true);
@@ -461,7 +478,7 @@ void ThreadedKFVio::matchingLoop() {
 
   for (;;) {
     // get new frame
-    std::shared_ptr<okvis::MultiFrame> frame;
+    std::shared_ptr<okvis::MultiFrame> frame;   ///关键点
 
     // get data and check for termination request
     if (keypointMeasurements_.PopBlocking(&frame) == false)
@@ -500,8 +517,9 @@ void ThreadedKFVio::matchingLoop() {
       waitForOptimizationTimer.start();
       std::unique_lock<std::mutex> l(estimator_mutex_);
       while (!optimizationDone_)
-        optimizationNotification_.wait(l);
+        optimizationNotification_.wait(l);  ///利用条件变量去阻塞等待后端优化线程优化完毕
       waitForOptimizationTimer.stop();
+
       addStateTimer.start();
       okvis::Time t0Matching = okvis::Time::now();
       bool asKeyframe = false;
@@ -517,50 +535,54 @@ void ThreadedKFVio::matchingLoop() {
       // -- matching keypoints, initialising landmarks etc.
       okvis::kinematics::Transformation T_WS;
       estimator_.get_T_WS(frame->id(), T_WS);
-      matchingTimer.start();
+      matchingTimer.start();    ///特征点匹配开始
       frontend_.dataAssociationAndInitialization(estimator_, T_WS, parameters_,
                                                  map_, frame, &asKeyframe);
-      matchingTimer.stop();
+      matchingTimer.stop();    ///特征点匹配结束
       if (asKeyframe)
         estimator_.setKeyframe(frame->id(), asKeyframe);
       if(!blocking_) {
+          ///当采用非阻塞的情形，必须在规定的时间内（一般为两帧图像时间间隔）完成优化，如果超时则提前退出，保证非阻塞
         double timeLimit = parameters_.optimization.timeLimitForMatchingAndOptimization
-                           -(okvis::Time::now()-t0Matching).toSec();
+                           -(okvis::Time::now()-t0Matching).toSec();    ///优化耗费时间限制：
         estimator_.setOptimizationTimeLimit(std::max<double>(0.0, timeLimit),
                                             parameters_.optimization.min_iterations);
       }
       optimizationDone_ = false;
     }  // unlock estimator_mutex_
 
-    // use queue size 1 to propagate a congestion to the _matchedFrames queue
+    // use queue size 1 to propagate a congestion to the _matchedFrames queue：队列长度设置为1，来同步
     if (matchedFrames_.PushBlockingIfFull(frame, 1) == false)
       return;
   }
 }
 
-// Loop to process IMU measurements.
+// Loop to process IMU measurements：处理每个IMU数据，以IMU的频率来传播更新状态，同时如果优化结果出来了，那么就以优化结果为初始值，重新传播
 void ThreadedKFVio::imuConsumerLoop() {
   okvis::ImuMeasurement data;
-  TimerSwitchable processImuTimer("0 processImuMeasurements",true);
+  TimerSwitchable processImuTimer("0 processImuMeasurements",true);///计时器：记录每个IMU数据的处理时间，不含阻塞等待时间
   for (;;) {
-    // get data and check for termination request
+    // get data and check for termination request:以阻塞方式从同步队列中取出IMU数据，并检查是否shutdown
     if (imuMeasurementsReceived_.PopBlocking(&data) == false)
       return;
-    processImuTimer.start();
-    okvis::Time start;
-    const okvis::Time* end;  // do not need to copy end timestamp
+    processImuTimer.start();  ///开始计时
+    okvis::Time start;  ///上次状态的时间戳
+    const okvis::Time* end;  // do not need to copy end timestamp：获取的IMU数据的时间戳
+    ///这段代码功能是将从线程安全队列的IMU数据取出后放入imuMeasurements_队列，供imu和frame同步使用
     {
       std::lock_guard<std::mutex> imuLock(imuMeasurements_mutex_);
       OKVIS_ASSERT_TRUE(Exception,
                         imuMeasurements_.empty()
                         || imuMeasurements_.back().timeStamp < data.timeStamp,
-                        "IMU measurement from the past received");
+                        "IMU measurement from the past received");//新进来的数据必须要比IMU deque中的数据新
 
+      //如果需要根据IMU的频率来传播更新状态，那么分两种情形：1,重新传播，是指后端优化出了新的位姿，然后依据此位姿为初始值，来传播更新状态
+      //2,不需要重新传播，即还没优化好，那么继续根据上次IMU处理后的状态继续传播下去
       if (parameters_.publishing.publishImuPropagatedState) {
         if (!repropagationNeeded_ && imuMeasurements_.size() > 0) {
           start = imuMeasurements_.back().timeStamp;
         } else if (repropagationNeeded_) {
-          std::lock_guard<std::mutex> lastStateLock(lastState_mutex_);
+          std::lock_guard<std::mutex> lastStateLock(lastState_mutex_);  ///上次状态，上锁，可能会被优化线程更新
           start = lastOptimizedStateTimestamp_;
           T_WS_propagated_ = lastOptimized_T_WS_;
           speedAndBiases_propagated_ = lastOptimizedSpeedAndBiases_;
@@ -569,14 +591,14 @@ void ThreadedKFVio::imuConsumerLoop() {
           start = okvis::Time(0, 0);
         end = &data.timeStamp;
       }
-      imuMeasurements_.push_back(data);
+      imuMeasurements_.push_back(data); ///将从线程安全队列取出的IMU数据放入IMU队列（deqeue容器）
     }  // unlock _imuMeasurements_mutex
 
     // notify other threads that imu data with timeStamp is here.
-    imuFrameSynchronizer_.gotImuData(data.timeStamp);
+    imuFrameSynchronizer_.gotImuData(data.timeStamp); ///通知imuFrame同步器来了最新的IMU
 
     if (parameters_.publishing.publishImuPropagatedState) {
-      Eigen::Matrix<double, 15, 15> covariance;
+      Eigen::Matrix<double, 15, 15> covariance; ///p,q,v,ba,bg共15维
       Eigen::Matrix<double, 15, 15> jacobian;
 
       frontend_.propagation(imuMeasurements_, imu_params_, T_WS_propagated_,
@@ -587,7 +609,9 @@ void ThreadedKFVio::imuConsumerLoop() {
       result.T_WS = T_WS_propagated_;
       result.speedAndBiases = speedAndBiases_propagated_;
       result.omega_S = imuMeasurements_.back().measurement.gyroscopes
-          - speedAndBiases_propagated_.segment<3>(3);
+          - speedAndBiases_propagated_.segment<3>(3); ///ws= w_measurement - b_g(测量的角速度减去偏差值)
+
+      //添加外参数：camera到IMU的为位姿
       for (size_t i = 0; i < parameters_.nCameraSystem.numCameras(); ++i) {
         result.vector_of_T_SCi.push_back(
             okvis::kinematics::Transformation(
@@ -675,7 +699,7 @@ okvis::ImuMeasurementDeque ThreadedKFVio::getImuMeasurments(
       .begin();
   okvis::ImuMeasurementDeque::iterator last_imu_package =
       imuMeasurements_.end();
-  // TODO go backwards through queue. Is probably faster.
+  // TODO go backwards through queue. Is probably faster.：这样遍历寻找确实有点慢了
   for (auto iter = imuMeasurements_.begin(); iter != imuMeasurements_.end();
       ++iter) {
     // move first_imu_package iterator back until iter->timeStamp is higher than requested begintime
@@ -723,7 +747,7 @@ void ThreadedKFVio::optimizationLoop() {
   TimerSwitchable afterOptimizationTimer("3.3 afterOptimization",true);
 
   for (;;) {
-    std::shared_ptr<okvis::MultiFrame> frame_pairs;
+    std::shared_ptr<okvis::MultiFrame> frame_pairs; ///匹配的关键点
     VioVisualizer::VisualizationData::Ptr visualizationDataPtr;
     okvis::Time deleteImuMeasurementsUntil(0, 0);
     if (matchedFrames_.PopBlocking(&frame_pairs) == false)

@@ -150,8 +150,9 @@ class ThreadSafeQueue {
       pthread_mutex_lock(&mutex_);
       size_t size = queue_.size();
       if (size >= max_queue_size) {
-        pthread_cond_wait(&condition_full_, &mutex_);
+        pthread_cond_wait(&condition_full_, &mutex_);   ///条件变量被nofity了通知
       }
+      ///再次判断是为了跳出本次循环检查shutdown变量，因为size一直没变，所有这两个if要么都执行要么都不执行，
       if (size >= max_queue_size) {
         pthread_mutex_unlock(&mutex_);
         continue;

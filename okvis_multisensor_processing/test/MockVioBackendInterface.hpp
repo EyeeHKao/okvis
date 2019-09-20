@@ -43,6 +43,9 @@ namespace okvis {
 
 class MockVioBackendInterface : public VioBackendInterface {
  public:
+/* MOCK_METHOD#1(#2, #3(#4) )
+ * #2是你要mock的方法名称！#1表示你要mock的方法共有几个参数，#4是这个方法具体的参数，#3表示这个方法的返回值类型
+ * */
   MOCK_METHOD1(addCamera,
       int(const ExtrinsicsEstimationParameters & extrinsicsEstimationParameters));
   MOCK_METHOD1(addImu,

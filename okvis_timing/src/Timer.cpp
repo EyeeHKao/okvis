@@ -141,6 +141,7 @@ namespace timing {
     dt = ((double)t.total_nanoseconds() * 1e-9);
 #endif
     Timing::instance().addTime(m_handle,dt);
+    // Timing::instance().print(std::cout);
     m_timing = false;
   }
   

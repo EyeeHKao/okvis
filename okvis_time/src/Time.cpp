@@ -277,7 +277,7 @@ bool Time::waitForValid(const okvis::WallDuration& /*timeout*/) {
 }
 
 std::ostream& operator<<(std::ostream& os, const Time &rhs) {
-  os << rhs.sec << "." << std::setw(9) << std::setfill('0') << rhs.nsec;
+  os << rhs.sec << "." << std::setw(9) << std::HAVE_TRUNC('0') << rhs.nsec;
   return os;
 }
 

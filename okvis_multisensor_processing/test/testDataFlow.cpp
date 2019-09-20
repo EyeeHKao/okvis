@@ -21,6 +21,10 @@ using ::testing::Between;
 using ::testing::Return;
 using ::testing::_;
 
+/*
+ * 测试ThreadedKFVio类，判断数据流是否正常，所以mock了其中前端VioFrontendInterface和后端VioBackendInterface两个实际处理数据的类
+ * */
+
 TEST(OkvisVioInterfaces, testDataFlow)
 {
   using namespace okvis;
@@ -36,11 +40,11 @@ TEST(OkvisVioInterfaces, testDataFlow)
   // configure mock object
   MockVioBackendInterface dummy;
   EXPECT_CALL(dummy, optimize(_,_,_))
-    .Times(Between(5, 10));
+    .Times(Between(5, 10)); ///模拟对象接口被调用的次数在5-10次之间
   EXPECT_CALL(dummy, get_T_WS(_,_))
     .Times(Between(12, 21));        // 1 per matching, 1 per optimization and in destructor
   EXPECT_CALL(dummy, addCamera(_))
-    .Times(2);
+    .Times(2);  ///这个mock的方法或函数被调用1次
   EXPECT_CALL(dummy, addImu(_))
     .Times(1);
   EXPECT_CALL(dummy, addStates(_,_,_))
@@ -51,16 +55,20 @@ TEST(OkvisVioInterfaces, testDataFlow)
     .Times(1);
 
   EXPECT_CALL(dummy, multiFrame(_))
-    .Times(AnyNumber());
+    .Times(AnyNumber());  ///mock的方法被调用任意次
   EXPECT_CALL(dummy, getSpeedAndBias(_,_,_))
     .Times(AnyNumber());
   EXPECT_CALL(dummy, numFrames())
     .Times(AnyNumber());
 
+  /*
+   * ON_CALL(#1, #2(#3)).WillByDefault(Return(#4));
+   * #1表示mock对象,#2表示想mock的那个方法名称,#3表示对应方法的参数，可用_代替
+   * */
   ON_CALL(dummy, numFrames())
-    .WillByDefault(Return(1));
+    .WillByDefault(Return(1));  ///默认返回1，
   ON_CALL(dummy, addStates(_,_,_))
-    .WillByDefault(Return(true));
+    .WillByDefault(Return(true)); ///默认返回真
   // to circumvent segfault
   ON_CALL(dummy, multiFrame(_))
     .WillByDefault(Return(std::shared_ptr<okvis::MultiFrame>(new okvis::MultiFrame(parameters.nCameraSystem,

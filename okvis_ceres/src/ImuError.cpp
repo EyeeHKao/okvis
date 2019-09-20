@@ -298,13 +298,13 @@ int ImuError::propagation(const okvis::ImuMeasurementDeque & imuMeasurements,
 
   // sanity check:
   assert(imuMeasurements.front().timeStamp<=time);
-  if (!(imuMeasurements.back().timeStamp >= end))
+  if (!(imuMeasurements.back().timeStamp >= end)) ///end新于imu测量队列
     return -1;  // nothing to do...
 
   // initial condition
-  Eigen::Vector3d r_0 = T_WS.r();
-  Eigen::Quaterniond q_WS_0 = T_WS.q();
-  Eigen::Matrix3d C_WS_0 = T_WS.C();
+  Eigen::Vector3d r_0 = T_WS.r(); ///平移
+  Eigen::Quaterniond q_WS_0 = T_WS.q(); ///旋转四元数
+  Eigen::Matrix3d C_WS_0 = T_WS.C();  ///旋转矩阵
 
   // increments (initialise with identity)
   Eigen::Quaterniond Delta_q(1,0,0,0);
@@ -350,14 +350,16 @@ int ImuError::propagation(const okvis::ImuMeasurementDeque & imuMeasurements,
       dt = (nexttime - time).toSec();
       const double r = dt / interval;
       omega_S_1 = ((1.0 - r) * omega_S_0 + r * omega_S_1).eval();
-      acc_S_1 = ((1.0 - r) * acc_S_0 + r * acc_S_1).eval();
+      acc_S_1 = ((1.0 - r) * acc_S_0 + r * acc_S_1).eval(); ///虚拟一个测量量，根据时刻比例值，线性插值
     }
 
+    //忽略时间戳小于开始时间戳的测量值
     if (dt <= 0.0) {
       continue;
     }
     Delta_t += dt;
 
+    ///第一次处理时，
     if (!hasStarted) {
       hasStarted = true;
       const double r = dt / (nexttime - it->timeStamp).toSec();
@@ -389,7 +391,7 @@ int ImuError::propagation(const okvis::ImuMeasurementDeque & imuMeasurements,
     }
 
     // actual propagation
-    // orientation:
+    // orientation:使用四元数0阶中点积分
     Eigen::Quaterniond dq;
     const Eigen::Vector3d omega_S_true = (0.5*(omega_S_0+omega_S_1) - speedAndBiases.segment<3>(3));
     const double theta_half = omega_S_true.norm() * 0.5 * dt;

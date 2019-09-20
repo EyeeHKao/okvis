@@ -67,6 +67,7 @@
 #include <okvis/VioFrontendInterface.hpp>
 #endif
 
+
 /// \brief okvis Main namespace of this package.
 namespace okvis {
 
@@ -340,6 +341,12 @@ class ThreadedKFVio : public VioInterface {
   okvis::Time lastAddedImageTimestamp_; ///< Timestamp of the newest image added to the image input queue.
 
 
+  ///传感器或者数据集的数据缓存到相应的线程安全队列中去，供各个线程去安全的处理：这个线程安全队列是以类模板实现，并实现了阻塞和非阻塞两种线程安全的数据处理，
+  ///一般会指定一个队列大小，阻塞式在获取数据时，若队列为空则等待队列，非空后立即获取数据，在压入数据时，若队列满则等待，队列不满则立即压入数据，
+  ///可见在传感器频率高，算法处理不够快（未能保证在下一帧到来时处理掉上一帧数据）时，程序会阻塞在压入数据处，也即不能实时处理数据
+  ///而非阻塞式则不会在队列空或者满时等待：队列为空，那么取数据时就返回false,队列为满，那么就丢弃队列中的最老的数据，并压入新数据
+  ///可见在传感器频率过高时，会出现丢数据帧情形，通过将队列长度设置为1可以保证每次处理的都是最新的数据
+  ///当算法或者数据消耗线程处理都足够快时，阻塞式会阻塞等待着获取最新数据，非阻塞式会返回，并处理其他工作
   /// @name Measurement input queues
   /// @{
 
@@ -362,7 +369,6 @@ class ThreadedKFVio : public VioInterface {
   okvis::threadsafe::ThreadSafeQueue<std::shared_ptr<okvis::MultiFrame>> matchedFrames_;
   /// \brief The IMU measurements.
   /// \warning Lock with imuMeasurements_mutex_.
-  okvis::ImuMeasurementDeque imuMeasurements_;
   /// \brief The Position measurements.
   /// \warning Lock with positionMeasurements_mutex_.
   okvis::PositionMeasurementDeque positionMeasurements_;
@@ -372,6 +378,7 @@ class ThreadedKFVio : public VioInterface {
   okvis::threadsafe::ThreadSafeQueue<VioVisualizer::VisualizationData::Ptr> visualizationData_;
   /// The queue containing the actual display images
   okvis::threadsafe::ThreadSafeQueue<std::vector<cv::Mat>> displayImages_;
+  okvis::ImuMeasurementDeque imuMeasurements_;
 
   /// @}
   /// @name Mutexes

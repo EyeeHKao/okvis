@@ -88,7 +88,7 @@ std::shared_ptr<okvis::MultiFrame> FrameSynchronizer::addNewFrame(std::shared_pt
     OKVIS_ASSERT_TRUE_DBG(Exception,multiFrame->image(frame->sensorId).empty(),
                        "Frame for this camera has already been added to multiframe!");
     if(frame_stamp != multiFrame->timestamp()) {
-      // timestamps do not agree. setting timestamp to middlepoint
+      // timestamps do not agree. setting timestamp to middlepoint:设置时间戳为中点
       frame_stamp += (multiFrame->timestamp()-frame_stamp)*0.5;
       multiFrame->setTimestamp(frame_stamp);
     }

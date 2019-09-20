@@ -56,7 +56,7 @@ ImuFrameSynchronizer::~ImuFrameSynchronizer() {
 // Tell the synchronizer that a new IMU measurement has been registered.
 void ImuFrameSynchronizer::gotImuData(const okvis::Time& stamp) {
   newestImuDataStamp_ = stamp;
-  if(imuDataNeededUntil_ < stamp)
+  if(imuDataNeededUntil_ < stamp) ///如果最新的数据时间戳大于需要直到某时刻的IMU数据，则通知不需要等待
     gotNeededImuData_.notify_all();
 }
 

@@ -208,7 +208,7 @@ int main(int argc, char **argv)
     return -1;
   }
 
-  okvis::Duration deltaT(0.0);
+  okvis::Duration deltaT(0.0);  ///忽略前面多长时间（s）的IMU和Camera数据,0就是不忽略
   if (argc == 4) {
     deltaT = okvis::Duration(atof(argv[3]));
   }
@@ -228,7 +228,10 @@ int main(int argc, char **argv)
                 std::placeholders::_1, std::placeholders::_2,
                 std::placeholders::_3, std::placeholders::_4));
 
-  okvis_estimator.setBlocking(true);
+    /// 一般处理数据集可以这么做，，因为离线一个个处理可保证不掉帧，而且有充足时间进行线下处理
+    ///而处理实时传感器数据，可能得出的结果是很老的时间戳的结果，这样相当于将传感器数据进行降采样了（跟处理的频率一样），
+    ///而采用非阻塞式处理最终可能也是降采样结果
+    okvis_estimator.setBlocking(true);  ///传感器数据处理设置为阻塞式：缓存同步队列满时（说明处理的比较慢），阻塞等待push入队列,
 
   // the folder path
   std::string path(argv[2]);
@@ -245,20 +248,21 @@ int main(int argc, char **argv)
   int number_of_lines = 0;
   while (std::getline(imu_file, line))
     ++number_of_lines;
+  //imu_file已经到文件底部了
   LOG(INFO)<< "No. IMU measurements: " << number_of_lines-1;
   if (number_of_lines - 1 <= 0) {
     LOG(ERROR)<< "no imu messages present in " << path+"/imu0/data.csv";
     return -1;
   }
   // set reading position to second line
-  imu_file.clear();
+  imu_file.clear(); ///重置为文件头部
   imu_file.seekg(0, std::ios::beg);
-  std::getline(imu_file, line);
+  std::getline(imu_file, line);///到达第二行
 
   std::vector<okvis::Time> times;
   okvis::Time latest(0);
   int num_camera_images = 0;
-  std::vector < std::vector < std::string >> image_names(numCameras);
+  std::vector < std::vector < std::string >> image_names(numCameras); ///各个相机的图像名
   for (size_t i = 0; i < numCameras; ++i) {
     num_camera_images = 0;
     std::string folder(path + "/cam" + std::to_string(i) + "/data");
@@ -291,40 +295,41 @@ int main(int argc, char **argv)
 
   int counter = 0;
   okvis::Time start(0.0);
+  //每读取一帧Image,就获取此时刻之前（包含此时刻）的所有IMU数据
   while (true) {
     okvis_estimator.display();
     poseViewer.display();
 
-    // check if at the end
+    // check if at the end：检查是否遍历完所有图像，暂停等待
     for (size_t i = 0; i < numCameras; ++i) {
       if (cam_iterators[i] == image_names[i].end()) {
-        std::cout << std::endl << "Finished. Press any key to exit." << std::endl << std::flush;
+        std::cout << i << std::endl << "Camera Finished. Press any key to exit." << std::endl << std::flush;
         cv::waitKey();
         return 0;
       }
     }
 
     /// add images
-    okvis::Time t;
+    okvis::Time t;  ///图像时间戳
 
     for (size_t i = 0; i < numCameras; ++i) {
       cv::Mat filtered = cv::imread(
           path + "/cam" + std::to_string(i) + "/data/" + *cam_iterators.at(i),
-          cv::IMREAD_GRAYSCALE);
+          cv::IMREAD_GRAYSCALE);///读入灰度图
       std::string nanoseconds = cam_iterators.at(i)->substr(
-          cam_iterators.at(i)->size() - 13, 9);
+          cam_iterators.at(i)->size() - 13, 9); ///ns 后13位数字
       std::string seconds = cam_iterators.at(i)->substr(
-          0, cam_iterators.at(i)->size() - 13);
+          0, cam_iterators.at(i)->size() - 13); ///s,0-
       t = okvis::Time(std::stoi(seconds), std::stoi(nanoseconds));
       if (start == okvis::Time(0.0)) {
-        start = t;
+        start = t;  ///记录开始时间
       }
 
       // get all IMU measurements till then
       okvis::Time t_imu = start;
       do {
         if (!std::getline(imu_file, line)) {
-          std::cout << std::endl << "Finished. Press any key to exit." << std::endl << std::flush;
+          std::cout << std::endl << "IMU Finished. Press any key to exit." << std::endl << std::flush;
           cv::waitKey();
           return 0;
         }
@@ -351,14 +356,15 @@ int main(int argc, char **argv)
 
         // add the IMU measurement for (blocking) processing
         if (t_imu - start + okvis::Duration(1.0) > deltaT) {
-          okvis_estimator.addImuMeasurement(t_imu, acc, gyr);
+          okvis_estimator.addImuMeasurement(t_imu, acc, gyr);   ///添加到IMU缓存队列（线程安全队列），算法线程会一个个处理掉
         }
 
-      } while (t_imu <= t);
+      } while (t_imu <= t); ///获取直到t时刻(image的时间戳)的所有IMU数据
 
       // add the image to the frontend for (blocking) processing
-      if (t - start > deltaT) {
-        okvis_estimator.addImage(t, i, filtered);
+      // 可以看出第一帧图像不处理，
+      if (t - start >deltaT) {
+        okvis_estimator.addImage(t, i, filtered);   ///添加到camera缓存队列（线程安全队列），算法线程会处理掉
       }
 
       cam_iterators[i]++;
